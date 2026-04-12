@@ -1,4 +1,4 @@
-# CodeUI2
+# OpenClawdex
 
 Desktop UI for orchestrating Claude and Codex coding agents through their CLIs.
 
@@ -69,6 +69,10 @@ The plan is to spawn both agents as subprocesses from the Electron main process:
 No OAuth, no API keys to manage — relies entirely on existing CLI logins.
 
 Reference implementation: [](https://github.com/pingdotgg/) does this same pattern (Claude via Agent SDK, Codex via app-server subprocess). Their code is at ``.
+
+## Code rules
+
+- **Zod for all external data.** Any data whose shape you don't fully control — CLI stdout, IPC messages from another process, JSON parsed from files, API responses — MUST be validated with a Zod schema before use. Define the schema first, then derive the TypeScript type from it with `z.infer<>`. Never trust `as` casts or hand-written interfaces for external boundaries.
 
 ## Design decisions
 
