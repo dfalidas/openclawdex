@@ -18,6 +18,15 @@ import { knownThreads, projects, projectFolders } from "./db/schema";
 const DEV_URL = "http://localhost:3000";
 const IS_DEV = !app.isPackaged;
 
+// macOS GUI apps don't inherit the shell PATH. Load it so child processes
+// (Claude CLI, git, node, etc.) work the same as in the terminal.
+if (app.isPackaged && process.platform === "darwin") {
+  try {
+    const path = execSync("/bin/zsh -ilc 'echo $PATH'", { encoding: "utf-8" }).trim();
+    if (path) process.env.PATH = path;
+  } catch { /* keep default PATH */ }
+}
+
 let mainWindow: BrowserWindow | null = null;
 
 // ── Claude state ──────────────────────────────────────────────

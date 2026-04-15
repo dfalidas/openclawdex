@@ -14,19 +14,6 @@ export function findClaudeBinary(): string | null {
   try {
     return execSync("which claude", { encoding: "utf-8" }).trim();
   } catch {
-    const candidates = [
-      `${process.env.HOME}/.claude/local/claude`,
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-    ];
-    for (const p of candidates) {
-      try {
-        execSync(`test -x "${p}"`);
-        return p;
-      } catch {
-        /* not found, try next */
-      }
-    }
     return null;
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@openclawdex/desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.0",
   "main": "dist/main.js",
   "scripts": {
     "dev": "tsc && electron .",
@@ -11,7 +11,7 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.104",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.110",
     "@libsql/client": "^0.17.2",
     "@openclawdex/shared": "workspace:*",
     "drizzle-orm": "^0.44.2",
