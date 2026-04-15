@@ -4,7 +4,7 @@ Desktop UI for orchestrating Claude and Codex coding agents through their CLIs.
 
 ## What this is
 
-An Electron app that will spawn `claude` and `codex` CLI processes as backends, presenting a unified chat UI to manage multiple agent threads in parallel.
+An Electron app that spawns `claude` and `codex` CLI processes as backends, presenting a unified chat UI to manage multiple agent threads in parallel.
 
 The UI is currently a **static mockup** — no CLI integration yet. The goal is a native Mac feel.
 

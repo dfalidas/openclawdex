@@ -1,6 +1,6 @@
 # OpenClawdex
 
-Desktop UI for orchestrating Claude and Codex coding agents through their CLIs., with a native Mac feel.
+Desktop UI for orchestrating Claude and Codex coding agents through their CLIs, with a native Mac feel.
 
 > **Status:** Early alpha. The chat UI is functional with real Claude integration (via Agent SDK). Codex integration is planned.
 
