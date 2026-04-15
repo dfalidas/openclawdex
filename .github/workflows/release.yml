@@ -1,9 +1,12 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to release (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,6 +17,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create and push tag
+        run: |
+          git tag "${{ inputs.version }}"
+          git push origin "${{ inputs.version }}"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -27,19 +35,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Build shared package
-        run: pnpm --filter @openclawdex/shared build
-
-      - name: Build web app
-        run: pnpm --filter @openclawdex/web build
-
-      - name: Copy web build into desktop
-        run: mkdir -p apps/desktop/web && cp -r apps/web/dist apps/desktop/web/
-
-      - name: Build desktop (tsc)
-        run: pnpm --filter @openclawdex/desktop build
-
-      - name: Package & publish
-        run: pnpm --filter @openclawdex/desktop dist -- --publish always
+      - name: Build & publish
+        run: pnpm dist -- --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
