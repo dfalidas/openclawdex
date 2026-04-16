@@ -14,6 +14,9 @@ export const ProjectInfo = z.object({
 });
 export type ProjectInfo = z.infer<typeof ProjectInfo>;
 
+export const Provider = z.enum(["claude", "gemini", "codex"]);
+export type Provider = z.infer<typeof Provider>;
+
 // ── Context stats (persisted per session) ─────────────────────
 
 export const ContextStats = z.object({
@@ -35,6 +38,7 @@ export const SessionInfo = z.object({
   firstPrompt: z.string().optional(),
   gitBranch: z.string().optional(),
   projectId: z.string().optional(),
+  provider: Provider.optional(),
   contextStats: ContextStats.optional(),
 });
 export type SessionInfo = z.infer<typeof SessionInfo>;
@@ -107,6 +111,7 @@ export const IpcSessionInit = z.object({
   threadId: z.string(),
   sessionId: z.string(),
   model: z.string(),
+  provider: Provider.optional(),
   cwd: z.string().optional(),
   projectId: z.string().optional(),
 });

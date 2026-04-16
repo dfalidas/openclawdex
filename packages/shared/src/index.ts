@@ -11,6 +11,7 @@ export {
 export {
   ProjectFolder,
   ProjectInfo,
+  Provider,
   ContextStats,
   SessionInfo,
   HistoryMessage,

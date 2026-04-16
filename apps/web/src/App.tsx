@@ -5,7 +5,7 @@ import type { ImagePayload } from "./components/ChatView";
 import { IpcEvent, SessionInfo, HistoryMessage, ProjectInfo, ContextStats } from "@openclawdex/shared";
 export type { ContextStats };
 
-export type Provider = "claude" | "codex";
+export type Provider = "claude" | "gemini" | "codex";
 
 export interface Thread {
   id: string;
@@ -15,13 +15,12 @@ export interface Thread {
   status: "idle" | "running" | "error" | "awaiting_input";
   messages: Message[];
   branch?: string;
-  claudeSessionId?: string;
+  providerSessionId?: string;
   historyLoaded?: boolean;
   lastModified: Date;
   contextStats?: ContextStats;
   archived?: boolean;
   needsAttention?: boolean;
-  /** ID of a tool call waiting for user input (e.g. AskUserQuestion). */
   pendingToolUseId?: string;
 }
 
@@ -52,11 +51,11 @@ function msgId() {
   return `msg-${nextMsgId++}`;
 }
 
-function newThread(projectId: string | null): Thread {
+function newThread(projectId: string | null, provider: Provider = "claude"): Thread {
   return {
     id: crypto.randomUUID(),
     name: "New conversation",
-    provider: "claude",
+    provider,
     projectId,
     status: "idle",
     messages: [],
@@ -80,19 +79,22 @@ function saveArchivedToStorage(threadId: string, archived: boolean) {
 function loadArchivedFromStorage(threadId: string): boolean {
   try {
     return localStorage.getItem(ARCHIVED_LS_PREFIX + threadId) === "1";
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 function sessionToThread(s: SessionInfo): Thread {
+  const provider = (s.provider ?? "claude") as Provider;
   return {
     id: s.sessionId,
     name: s.summary,
-    provider: "claude",
+    provider,
     projectId: s.projectId ?? null,
     status: "idle",
     messages: [],
     branch: s.gitBranch,
-    claudeSessionId: s.sessionId,
+    providerSessionId: s.sessionId,
     historyLoaded: false,
     lastModified: new Date(s.lastModified),
     contextStats: s.contextStats,
@@ -107,15 +109,12 @@ function historyToMessages(items: HistoryMessage[]): Message[] {
     }
     const images: MessageImage[] | undefined =
       h.role === "user" && h.images && h.images.length > 0
-        ? h.images.map((img) => ({
-            url: `data:${img.mediaType};base64,${img.base64}`,
-          }))
+        ? h.images.map((img) => ({ url: `data:${img.mediaType};base64,${img.base64}` }))
         : undefined;
     return { id: h.id, role: h.role, content: h.content, timestamp: new Date(), ...(images && { images }) };
   });
 }
 
-/** Pure reducer — applies one IPC event to a thread. */
 function applyIpcEvent(thread: Thread, event: IpcEvent): Thread {
   switch (event.type) {
     case "assistant_text": {
@@ -127,10 +126,9 @@ function applyIpcEvent(thread: Thread, event: IpcEvent): Thread {
         msgs.push({ id: msgId(), role: "assistant", content: event.text, timestamp: new Date() });
       }
       const firstLine = msgs[msgs.length - 1].content.trim().split("\n")[0];
-      const name =
-        thread.name === "New conversation" && firstLine.length > 0
-          ? firstLine.slice(0, 40) + (firstLine.length > 40 ? "..." : "")
-          : thread.name;
+      const name = thread.name === "New conversation" && firstLine.length > 0
+        ? firstLine.slice(0, 40) + (firstLine.length > 40 ? "..." : "")
+        : thread.name;
       return { ...thread, name, messages: msgs };
     }
     case "status":
@@ -138,7 +136,7 @@ function applyIpcEvent(thread: Thread, event: IpcEvent): Thread {
     case "tool_use":
       return { ...thread, messages: [...thread.messages, { id: msgId(), role: "tool_use" as const, content: "", timestamp: new Date(), toolName: event.toolName, toolInput: event.toolInput }] };
     case "error":
-      return { ...thread, status: "error" as const, messages: [...thread.messages, { id: msgId(), role: "assistant" as const, content: `Error: ${event.message}`, timestamp: new Date() }] };
+      return { ...thread, status: "error", messages: [...thread.messages, { id: msgId(), role: "assistant", content: `Error: ${event.message}`, timestamp: new Date() }] };
     case "result": {
       const contextStats: ContextStats = {
         ...(event.totalTokens != null && { totalTokens: event.totalTokens }),
@@ -149,18 +147,48 @@ function applyIpcEvent(thread: Thread, event: IpcEvent): Thread {
       };
       return { ...thread, contextStats };
     }
-    case "session_init": {
-      return { ...thread, claudeSessionId: event.sessionId, historyLoaded: true };
-    }
-    case "deferred_tool_use": {
+    case "session_init":
+      return { ...thread, providerSessionId: event.sessionId, historyLoaded: true };
+    case "deferred_tool_use":
       return { ...thread, pendingToolUseId: event.toolUseId };
-    }
   }
 }
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 400;
 const SIDEBAR_DEFAULT = 240;
+
+function ProviderSwitch({ provider, onChange }: { provider: Provider; onChange: (p: Provider) => void }) {
+  const options: { id: Provider; label: string }[] = [
+    { id: "claude", label: "Claude Code" },
+    { id: "gemini", label: "Gemini CLI" },
+  ];
+
+  return (
+    <div className="px-5 pt-3 shrink-0">
+      <div className="max-w-[720px] mx-auto flex items-center gap-2 text-[12px]">
+        <span style={{ color: "var(--text-muted)" }}>Agent</span>
+        {options.map((opt) => {
+          const active = provider === opt.id;
+          return (
+            <button
+              key={opt.id}
+              onClick={() => onChange(opt.id)}
+              className="px-2.5 py-1 rounded-lg transition-colors"
+              style={{
+                background: active ? "var(--surface-2)" : "transparent",
+                border: active ? "1px solid var(--border-emphasis)" : "1px solid transparent",
+                color: active ? "var(--text-primary)" : "var(--text-muted)",
+              }}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -182,12 +210,9 @@ export function App() {
   const dragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
-  // Real thread if selected, pending thread if viewing the new-thread composer, or null
   const activeThread: Thread | null = activeThreadId
     ? (activeThreadId === pendingThread?.id ? pendingThread : threads.find((t) => t.id === activeThreadId) ?? null)
     : null;
-
-  // ── Load projects ─────────────────────────────────────────────
 
   const refreshProjects = useCallback(() => {
     if (!window.openclawdex?.listProjects) return;
@@ -199,8 +224,6 @@ export function App() {
     });
   }, []);
 
-  // ── Load past sessions on mount ───────────────────────────────
-
   useEffect(() => {
     refreshProjects();
 
@@ -211,11 +234,9 @@ export function App() {
     window.openclawdex.listSessions().then((sessions) => {
       const parsed = sessions.map((s) => SessionInfo.safeParse(s)).flatMap((r) => r.success ? [r.data] : []);
       if (parsed.length > 0) {
-        const historyThreads = parsed
-          .sort((a, b) => b.lastModified - a.lastModified)
-          .map(sessionToThread);
+        const historyThreads = parsed.sort((a, b) => b.lastModified - a.lastModified).map(sessionToThread);
         setThreads((prev) => {
-          const inProgress = prev.filter((t) => !t.claudeSessionId);
+          const inProgress = prev.filter((t) => !t.providerSessionId);
           return [...inProgress, ...historyThreads];
         });
         setActiveThreadId((prev) => prev ?? historyThreads[0]?.id ?? null);
@@ -225,13 +246,10 @@ export function App() {
       console.error("[listSessions] failed:", err);
       setThreadsLoading(false);
     });
-  }, []);
-
-  // ── IPC event listener ────────────────────────────────────────
+  }, [refreshProjects]);
 
   useEffect(() => {
     if (!window.openclawdex?.onEvent) return;
-
     const unsubscribe = window.openclawdex.onEvent((raw: unknown) => {
       const parsed = IpcEvent.safeParse(raw);
       if (!parsed.success) {
@@ -240,17 +258,14 @@ export function App() {
       }
       const event = parsed.data;
 
-      // Events for the pending thread
       if (pendingThreadRef.current && event.threadId === pendingThreadRef.current.id) {
         if (event.type === "session_init") {
-          // Commit the pending thread to the sidebar.
           const committed = {
             ...pendingThreadRef.current,
-            claudeSessionId: event.sessionId,
+            providerSessionId: event.sessionId,
             historyLoaded: true,
           };
           setThreads((prev) => [committed, ...prev]);
-          // Keep activeThreadId pointing at this thread (same id)
           setPendingThread(null);
         } else {
           setPendingThread((prev) => prev ? applyIpcEvent(prev, event) : prev);
@@ -258,11 +273,9 @@ export function App() {
         return;
       }
 
-      // Events for already-committed threads.
       setThreads((prev) => prev.map((t) => {
         if (t.id !== event.threadId) return t;
         const updated = applyIpcEvent(t, event);
-        // Mark needs-attention when thread goes idle while not being viewed
         if (event.type === "status" && event.status === "idle" && t.id !== activeThreadIdRef.current) {
           return { ...updated, needsAttention: true };
         }
@@ -273,25 +286,18 @@ export function App() {
     return unsubscribe;
   }, []);
 
-  // ── Lazy-load history when switching to a history thread ──
-
   useEffect(() => {
-    if (!activeThread || activeThread.historyLoaded || !activeThread.claudeSessionId) return;
+    if (!activeThread || activeThread.historyLoaded || !activeThread.providerSessionId) return;
+    if (activeThread.provider !== "claude") return;
     if (!window.openclawdex?.loadHistory) return;
 
-    const { claudeSessionId } = activeThread;
-    window.openclawdex.loadHistory(claudeSessionId).then((items) => {
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.id === activeThread.id
-            ? { ...t, messages: historyToMessages(items), historyLoaded: true }
-            : t,
-        ),
-      );
+    const { providerSessionId } = activeThread;
+    window.openclawdex.loadHistory(providerSessionId, activeThread.provider).then((items) => {
+      setThreads((prev) => prev.map((t) =>
+        t.id === activeThread.id ? { ...t, messages: historyToMessages(items), historyLoaded: true } : t,
+      ));
     });
-  }, [activeThread?.id, activeThread?.historyLoaded]);
-
-  // ── Resolve git branch for the active thread if missing ──────
+  }, [activeThread?.id, activeThread?.historyLoaded, activeThread?.provider, activeThread?.providerSessionId]);
 
   useEffect(() => {
     if (!activeThread || activeThread.branch) return;
@@ -305,113 +311,97 @@ export function App() {
       setPendingThread((prev) => prev && prev.id === threadId ? { ...prev, branch } : prev);
       setThreads((prev) => prev.map((t) => t.id === threadId ? { ...t, branch } : t));
     });
-  }, [activeThread?.id, activeThread?.branch, projects]);
+  }, [activeThread?.id, activeThread?.branch, activeThread?.projectId, projects]);
 
-  // ── Send message handler ──────────────────────────────────────
+  const handleSend = useCallback((threadId: string, text: string, images?: ImagePayload[]) => {
+    const msgImages: MessageImage[] | undefined = images?.map((img) => ({
+      url: `data:${img.mediaType};base64,${img.base64}`,
+    }));
 
-  const handleSend = useCallback(
-    (threadId: string, text: string, images?: ImagePayload[]) => {
-      const msgImages: MessageImage[] | undefined = images?.map((img) => ({
-        url: `data:${img.mediaType};base64,${img.base64}`,
-      }));
+    const userMsg: Message = {
+      id: msgId(),
+      role: "user",
+      content: text,
+      timestamp: new Date(),
+      ...(msgImages && msgImages.length > 0 && { images: msgImages }),
+    };
 
-      const userMsg: Message = {
-        id: msgId(),
-        role: "user",
-        content: text,
-        timestamp: new Date(),
-        ...(msgImages && msgImages.length > 0 && { images: msgImages }),
-      };
+    const pending = pendingThreadRef.current;
+    if (pending && threadId === pending.id) {
+      const name = text.length > 40 ? text.slice(0, 40) + "…" : text;
+      setPendingThread((prev) => prev ? { ...prev, name, status: "running", messages: [userMsg] } : prev);
+      window.openclawdex?.send(pending.id, text, {
+        provider: pending.provider === "gemini" ? "gemini" : "claude",
+        projectId: pending.projectId ?? undefined,
+        images,
+      });
+      return;
+    }
 
-      const pending = pendingThreadRef.current;
-      if (pending && threadId === pending.id) {
-        // First message on pending thread — update it, send with projectId
-        const name = text.length > 40 ? text.slice(0, 40) + "…" : text;
-        setPendingThread((prev) => prev ? { ...prev, name, status: "running", messages: [userMsg] } : prev);
-        window.openclawdex?.send(pending.id, text, { projectId: pending.projectId ?? undefined, images });
-      } else {
-        setThreads((prev) =>
-          prev.map((t) => {
-            if (t.id !== threadId) return t;
-            return { ...t, status: "running" as const, messages: [...t.messages, userMsg] };
-          }),
-        );
-        const thread = threadsRef.current.find((t) => t.id === threadId);
-        window.openclawdex?.send(threadId, text, { resumeSessionId: thread?.claudeSessionId, projectId: thread?.projectId ?? undefined, images });
-      }
-    },
-    [],
-  );
-
-  // ── Select thread (clears attention badge) ────────────────────
+    setThreads((prev) => prev.map((t) => t.id === threadId ? { ...t, status: "running", messages: [...t.messages, userMsg] } : t));
+    const thread = threadsRef.current.find((t) => t.id === threadId);
+    window.openclawdex?.send(threadId, text, {
+      provider: thread?.provider === "gemini" ? "gemini" : "claude",
+      resumeSessionId: thread?.providerSessionId,
+      projectId: thread?.projectId ?? undefined,
+      images,
+    });
+  }, []);
 
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
     setThreads((prev) => prev.map((t) => t.id === id ? { ...t, needsAttention: false } : t));
   }, []);
 
-  // ── New thread within a project ──────────────────────────────
-
   const handleNewThread = useCallback((projectId: string) => {
-    const thread = newThread(projectId);
+    const thread = newThread(projectId, "claude");
     setPendingThread(thread);
     setActiveThreadId(thread.id);
-    // Git branch is resolved by the useEffect above once this thread becomes active.
   }, []);
-
-  // ── Create project (folder picker) ───────────────────────────
 
   const handleCreateProject = useCallback(() => {
     if (!window.openclawdex?.createProject) return;
     window.openclawdex.createProject().then((project) => {
-      if (!project) return; // cancelled
+      if (!project) return;
       const parsed = ProjectInfo.safeParse(project);
       if (parsed.success) {
         setProjects((prev) => [...prev, parsed.data]);
-        // Immediately start a new thread in the new project
-        const thread = newThread(parsed.data.id);
+        const thread = newThread(parsed.data.id, "claude");
         setPendingThread(thread);
         setActiveThreadId(thread.id);
-        // Git branch is resolved by the useEffect once this thread becomes active.
       }
     });
   }, []);
 
-  // ── Respond to deferred tool (e.g. AskUserQuestion) ──────────
-
-  const handleRespondToTool = useCallback(
-    (threadId: string, toolUseId: string, text: string) => {
-      const userMsg: Message = {
-        id: msgId(),
-        role: "user",
-        content: text,
-        timestamp: new Date(),
-      };
-
-      // Update thread: add user message, clear pending, set running
-      const updateThread = (t: Thread): Thread =>
-        t.id === threadId
-          ? { ...t, status: "running" as const, pendingToolUseId: undefined, messages: [...t.messages, userMsg] }
-          : t;
-
-      if (pendingThreadRef.current?.id === threadId) {
-        setPendingThread((prev) => prev ? updateThread(prev) as Thread : prev);
-      } else {
-        setThreads((prev) => prev.map(updateThread));
-      }
-
-      window.openclawdex?.respondToTool(threadId, toolUseId, text);
-    },
-    [],
-  );
-
-  // ── Interrupt handler ─────────────────────────────────────────
-
-  const handleInterrupt = useCallback((threadId: string) => {
-    window.openclawdex?.interrupt(threadId);
+  const handleSetProvider = useCallback((threadId: string, provider: Provider) => {
+    if (pendingThreadRef.current?.id === threadId) {
+      setPendingThread((prev) => prev && prev.messages.length === 0 ? { ...prev, provider } : prev);
+      return;
+    }
+    setThreads((prev) => prev.map((t) => (
+      t.id === threadId && t.messages.length === 0 && !t.providerSessionId ? { ...t, provider } : t
+    )));
   }, []);
 
-  // ── Project rename/delete handlers ────────────────────────────
+  const handleRespondToTool = useCallback((threadId: string, toolUseId: string, text: string) => {
+    const userMsg: Message = { id: msgId(), role: "user", content: text, timestamp: new Date() };
+    const updateThread = (t: Thread): Thread =>
+      t.id === threadId ? { ...t, status: "running", pendingToolUseId: undefined, messages: [...t.messages, userMsg] } : t;
+
+    if (pendingThreadRef.current?.id === threadId) {
+      setPendingThread((prev) => prev ? updateThread(prev) : prev);
+    } else {
+      setThreads((prev) => prev.map(updateThread));
+    }
+
+    const thread = pendingThreadRef.current?.id === threadId ? pendingThreadRef.current : threadsRef.current.find((t) => t.id === threadId);
+    window.openclawdex?.respondToTool(threadId, toolUseId, text, thread?.provider === "gemini" ? "gemini" : "claude");
+  }, []);
+
+  const handleInterrupt = useCallback((threadId: string) => {
+    const thread = pendingThreadRef.current?.id === threadId ? pendingThreadRef.current : threadsRef.current.find((t) => t.id === threadId);
+    window.openclawdex?.interrupt(threadId, thread?.provider === "gemini" ? "gemini" : "claude");
+  }, []);
 
   const handleRenameProject = useCallback((projectId: string, name: string) => {
     window.openclawdex?.renameProject(projectId, name).then(refreshProjects);
@@ -421,56 +411,42 @@ export function App() {
     window.openclawdex?.deleteProject(projectId).then(() => {
       setThreads((prev) => {
         const removed = prev.filter((t) => t.projectId === projectId);
-        if (removed.some((t) => t.id === activeThreadId)) {
-          setActiveThreadId(null);
-        }
+        if (removed.some((t) => t.id === activeThreadId)) setActiveThreadId(null);
         return prev.filter((t) => t.projectId !== projectId);
       });
       refreshProjects();
     });
   }, [refreshProjects, activeThreadId]);
 
-  // ── Thread rename/delete handlers ─────────────────────────────
-
   const handleRenameThread = useCallback((threadId: string, name: string) => {
     setThreads((prev) => prev.map((t) => t.id === threadId ? { ...t, name } : t));
     const thread = threadsRef.current.find((t) => t.id === threadId);
-    if (thread?.claudeSessionId) {
-      window.openclawdex?.renameThread(thread.claudeSessionId, name);
+    if (thread?.provider === "claude" && thread.providerSessionId) {
+      window.openclawdex?.renameThread(thread.providerSessionId, name);
     }
   }, []);
 
   const handleDeleteThread = useCallback((threadId: string) => {
     const thread = threadsRef.current.find((t) => t.id === threadId);
     setThreads((prev) => prev.filter((t) => t.id !== threadId));
-    if (activeThreadId === threadId) {
-      setActiveThreadId(null);
-    }
-    if (thread?.claudeSessionId) {
-      window.openclawdex?.deleteThread(thread.claudeSessionId);
+    if (activeThreadId === threadId) setActiveThreadId(null);
+    if (thread?.provider === "claude" && thread.providerSessionId) {
+      window.openclawdex?.deleteThread(thread.providerSessionId);
     }
   }, [activeThreadId]);
 
   const handleArchiveThread = useCallback((threadId: string) => {
-    setThreads((prev) =>
-      prev.map((t) => {
-        if (t.id !== threadId) return t;
-        const archived = !t.archived;
-        saveArchivedToStorage(t.claudeSessionId ?? t.id, archived);
-        return { ...t, archived };
-      }),
-    );
-    // If archiving the active thread, deselect it
+    setThreads((prev) => prev.map((t) => {
+      if (t.id !== threadId) return t;
+      const archived = !t.archived;
+      saveArchivedToStorage(t.providerSessionId ?? t.id, archived);
+      return { ...t, archived };
+    }));
     if (activeThreadId === threadId) {
       const thread = threadsRef.current.find((t) => t.id === threadId);
-      if (!thread?.archived) {
-        // Currently not archived → about to be archived → deselect
-        setActiveThreadId(null);
-      }
+      if (!thread?.archived) setActiveThreadId(null);
     }
   }, [activeThreadId]);
-
-  // ── Sidebar drag ──────────────────────────────────────────────
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -479,10 +455,7 @@ export function App() {
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
       const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, ev.clientX));
-      // Bypass React — update DOM directly for smooth 60fps resize
-      if (sidebarRef.current) {
-        sidebarRef.current.style.width = `${w}px`;
-      }
+      if (sidebarRef.current) sidebarRef.current.style.width = `${w}px`;
     };
 
     const onUp = (ev: MouseEvent) => {
@@ -492,7 +465,7 @@ export function App() {
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, ev.clientX));
-      setSidebarWidth(w); // Commit final width to React state
+      setSidebarWidth(w);
       localStorage.setItem("sidebarWidth", String(w));
     };
 
@@ -501,6 +474,8 @@ export function App() {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }, []);
+
+  const showProviderSwitch = !!activeThread && activeThread.messages.length === 0 && activeThread.status === "idle";
 
   return (
     <div className="flex h-full" style={{ background: "rgba(24, 24, 24, 0.30)" }}>
@@ -520,34 +495,19 @@ export function App() {
           isLoading={threadsLoading}
         />
       </div>
-      {/* Drag handle */}
       <div
         className="w-[2px] shrink-0 cursor-col-resize hover:bg-white/10 active:bg-white/15 transition-colors rounded-full"
         onMouseDown={onDragStart}
-        style={{
-          marginLeft: "-2px",
-          marginRight: "-2px",
-          marginTop: "16px",
-          marginBottom: "16px",
-          zIndex: 10,
-        }}
+        style={{ marginLeft: "-2px", marginRight: "-2px", marginTop: "16px", marginBottom: "16px", zIndex: 10 }}
       />
-      {/* Main content panel */}
       <div
         className="flex-1 flex flex-col min-w-0 overflow-hidden"
-        style={{
-          background: "var(--surface-0)",
-          borderRadius: "16px 0 0 16px",
-          border: "1px solid var(--border-default)",
-          borderRight: "none",
-        }}
+        style={{ background: "var(--surface-0)", borderRadius: "16px 0 0 16px", border: "1px solid var(--border-default)", borderRight: "none" }}
       >
-        <ChatView
-          thread={activeThread}
-          onSend={handleSend}
-          onInterrupt={handleInterrupt}
-          onRespondToTool={handleRespondToTool}
-        />
+        {showProviderSwitch && activeThread && (
+          <ProviderSwitch provider={activeThread.provider} onChange={(p) => handleSetProvider(activeThread.id, p)} />
+        )}
+        <ChatView thread={activeThread} onSend={handleSend} onInterrupt={handleInterrupt} onRespondToTool={handleRespondToTool} />
       </div>
     </div>
   );
